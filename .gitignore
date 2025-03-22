@@ -26,3 +26,10 @@ pip-log.txt
 .tox
 
 .python-version
+
+
+# Output files
+*.txt
+*.m4b
+*.mp3
+*.png

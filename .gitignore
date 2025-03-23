@@ -32,4 +32,9 @@ pip-log.txt
 *.txt
 *.m4b
 *.mp3
+*.srt
 *.png
+*.Identifier
+
+epub
+txt

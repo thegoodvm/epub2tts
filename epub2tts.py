@@ -29,7 +29,7 @@ from pedalboard import Pedalboard, Compressor, Gain, NoiseGate, LowShelfFilter
 from pedalboard.io import AudioFile
 from PIL import Image
 from pydub import AudioSegment
-from pydub.silence import split_on_silence
+from pydub.silence import detect_silence
 from TTS.api import TTS
 from TTS.tts.configs.xtts_config import XttsConfig
 from TTS.tts.models.xtts import Xtts
@@ -341,37 +341,96 @@ def get_duration(file_path):
     duration_milliseconds = len(audio)
     return duration_milliseconds
 
-def join_temp_files_to_chapter(tempfiles, outputwav):
+def join_temp_files_to_chapter(tempfiles, text_timings, outputwav):
+    # First concatenate all temp files
     tempwavfiles = [AudioSegment.from_file(f"{f}") for f in tempfiles]
     concatenated = sum(tempwavfiles)
-    # remove silence, then export to wav
-    #print(f"Replacing silences longer than one second with one second of silence ({outputwav})")
+    
+    # Detect all silences in the concatenated audio
+    silences = detect_silence(
+        concatenated, 
+        min_silence_len=1000, 
+        silence_thresh=-50
+    )
+    
+    # Create silence segments we'll use
     one_sec_silence = AudioSegment.silent(duration=1000)
     two_sec_silence = AudioSegment.silent(duration=2000)
-    # This AudioSegment is dedicated for each file.
+    
+    # Process the audio and calculate timing adjustments
     audio_modified = AudioSegment.empty()
-    # Split audio into chunks where detected silence is longer than one second
-    chunks = split_on_silence(
-        concatenated, min_silence_len=1000, silence_thresh=-50
-    )
-    msec_added = 0
-    # Iterate through each chunk
-    for chunkindex, chunk in enumerate(chunks):
-        audio_modified += chunk
-        audio_modified += one_sec_silence
-        msec_added += 1000
-
-    if len(chunks) != 1:
-        print("Warning, parts with silence was removed .srt will be out of sync")
+    current_pos = 0
+    timing_map = []  # Store mapping of original positions to new positions
+    
+    # If no silences were detected, just use the original audio
+    if not silences:
+        audio_modified = concatenated
+        timing_map.append((0, len(concatenated), 0))  # No shift
+    else:
+        last_end = 0
+        for silence_start, silence_end in silences:
+            # Add the audio segment before this silence
+            if current_pos < silence_start:
+                segment_len = silence_start - current_pos
+                timing_map.append((current_pos, silence_start, len(audio_modified)))
+                audio_modified += concatenated[current_pos:silence_start]
+            
+            # Handle the silence
+            silence_duration = silence_end - silence_start
+            if silence_duration > 1000:
+                timing_map.append((silence_start, silence_end, len(audio_modified)))
+                audio_modified += one_sec_silence
+            else:
+                timing_map.append((silence_start, silence_end, len(audio_modified)))
+                audio_modified += concatenated[silence_start:silence_end]
+            
+            current_pos = silence_end
+            last_end = silence_end
         
-    # add extra 2sec silence at the end of each part/chapter
-    msec_added += 2000
+        # Add any remaining audio after the last silence
+        if current_pos < len(concatenated):
+            timing_map.append((current_pos, len(concatenated), len(audio_modified)))
+            audio_modified += concatenated[current_pos:]
+    
+    # Add the 2-second silence at the end
+    final_length = len(audio_modified)
     audio_modified += two_sec_silence
-    # Write modified audio to the final audio segment
+    
+    # Adjust text timings using the timing map
+    adjusted_timings = []
+    for start_time, duration, text in text_timings:
+        new_start_time = start_time
+        new_duration = duration
+        
+        # Find the corresponding segment in timing_map
+        for orig_start, orig_end, new_start in timing_map:
+            if start_time >= orig_start and start_time < orig_end:
+                # Calculate the relative position within the segment
+                relative_pos = start_time - orig_start
+                new_start_time = new_start + relative_pos
+                
+                # Adjust duration if it spans multiple segments
+                duration_end = start_time + duration
+                if duration_end > orig_end:
+                    # Find the mapping for the end position
+                    for end_orig_start, end_orig_end, end_new_start in timing_map:
+                        if duration_end >= end_orig_start and duration_end <= end_orig_end:
+                            relative_end = duration_end - end_orig_start
+                            new_end_time = end_new_start + relative_end
+                            new_duration = new_end_time - new_start_time
+                            break
+                break
+        
+        adjusted_timings.append((new_start_time, new_duration, text))
+    
+    # Export the modified audio
     audio_modified.export(outputwav, format="wav")
+    
+    # Cleanup temp files
     for f in tempfiles:
         os.remove(f)
-    return msec_added
+    
+    return adjusted_timings, final_length
 
 def process_book_chapter(dat):
     print("initiating chapter: ", dat['chapter'])
@@ -387,7 +446,7 @@ def process_book_chapter(dat):
         time_ofset += sound_len_ms
         text_timings.append((sound_start_ms, sound_len_ms, text))
 
-    join_temp_files_to_chapter(dat['tempfiles'], dat['outputwav'])
+    text_timings, time_removed = join_temp_files_to_chapter(dat['tempfiles'], text_timings, dat['outputwav'])
 
     actual_chaper_len_msec = get_duration(dat['outputwav'])
 

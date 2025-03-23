@@ -35,6 +35,7 @@ pip-log.txt
 *.srt
 *.png
 *.Identifier
+*.sh
 
 epub
 txt

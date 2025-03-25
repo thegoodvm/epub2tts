@@ -13,7 +13,7 @@ BASE_DIR="./txt/s_classes_that_i_raised/"
 START_VOLUME=9
 
 # Loop through the desired volume numbers
-for VOLUME in {01..06}; do
+for VOLUME in {19..24}; do
   # Construct the input file name
   INPUT_FILE="${BASE_DIR}segment_${VOLUME}.txt"
   
